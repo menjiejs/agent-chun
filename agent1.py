@@ -135,7 +135,7 @@ if __name__ == "__main__":
     skill_info = get_current_info()
     
     print("=" * 50)
-    print(f"🤖 当前技能: {skill_info['display_name']}")
+    print(f" 当前技能: {skill_info['display_name']}")
     print(f"📝 {skill_info['description']}")
     print("=" * 50)
     print("💡 命令:")

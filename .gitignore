@@ -18,15 +18,24 @@ __pycache__/
 # IDE配置
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 
 # 日志和临时文件
+logs/
+data/
 *.log
 *.tmp
 .DS_Store
 *.db
 *.sqlite3
+
+# Node / third-party runtime artifacts
+node_modules/
+QQ-NapCat.app/
+napcat/
+napcat-inject/
 
 # 部署相关
 dist/
