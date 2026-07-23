@@ -1,12 +1,24 @@
 import os
 import secrets
+import time
+import uuid
 from typing import Optional
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, field_validator
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
+from starlette.responses import JSONResponse
 
 from app.agent import (
     DEFAULT_SESSION_ID,
@@ -16,6 +28,7 @@ from app.agent import (
     stream_conversation,
     switch_skill,
 )
+from app.logging_config import logger
 
 
 HOST = "127.0.0.1"
@@ -78,14 +91,90 @@ def require_api_token(
     verify_token_value(token)
 
 
+def get_request_id(request):
+    return getattr(request.state, "request_id", uuid.uuid4().hex)
+
+
+def error_response(request, status_code, code, message, headers=None):
+    return JSONResponse(
+        status_code=status_code,
+        headers=headers,
+        content={
+            "error": {
+                "code": code,
+                "message": message,
+                "request_id": get_request_id(request),
+            }
+        },
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    if exc.status_code == 401:
+        code, message = "AUTHENTICATION_FAILED", "认证失败"
+    elif exc.status_code == 404:
+        code, message = "NOT_FOUND", str(exc.detail)
+    elif exc.status_code >= 500:
+        code, message = "INTERNAL_ERROR", "服务暂时不可用"
+    else:
+        code, message = "HTTP_ERROR", str(exc.detail)
+    return error_response(request, exc.status_code, code, message, exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    return error_response(request, 422, "VALIDATION_ERROR", "请求参数不正确")
+
+
+@app.middleware("http")
+async def log_request(request, call_next):
+    request.state.request_id = uuid.uuid4().hex
+    started_at = time.perf_counter()
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        logger.error(
+            "request_error request_id=%s method=%s path=%s error_type=%s",
+            request.state.request_id,
+            request.method,
+            request.url.path,
+            type(exc).__name__,
+        )
+        response = error_response(
+            request,
+            500,
+            "INTERNAL_ERROR",
+            "服务暂时不可用",
+        )
+
+    response.headers["X-Request-ID"] = request.state.request_id
+    logger.info(
+        "request_complete request_id=%s method=%s path=%s status_code=%s "
+        "duration_ms=%.2f session_id=%s",
+        request.state.request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        (time.perf_counter() - started_at) * 1000,
+        getattr(request.state, "session_id", "-"),
+    )
+    return response
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
 @app.get("/skills")
-def skills(session_id: Optional[str] = Query(default=None)):
+def skills(
+    http_request: Request,
+    session_id: Optional[str] = Query(default=None),
+):
     normalized_session_id = normalize_session_id(session_id)
+    http_request.state.session_id = normalized_session_id
     return {
         "session_id": normalized_session_id,
         "current_skill": get_current_info(normalized_session_id),
@@ -94,8 +183,9 @@ def skills(session_id: Optional[str] = Query(default=None)):
 
 
 @app.post("/switch_skill", dependencies=[Depends(require_api_token)])
-def switch_skill_api(request: SwitchSkillRequest):
+def switch_skill_api(request: SwitchSkillRequest, http_request: Request):
     session_id = normalize_session_id(request.session_id)
+    http_request.state.session_id = session_id
     skill_name = request.skill_name.strip()
 
     if not switch_skill(skill_name, session_id):
@@ -108,16 +198,10 @@ def switch_skill_api(request: SwitchSkillRequest):
 
 
 @app.post("/chat", dependencies=[Depends(require_api_token)])
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, http_request: Request):
     session_id = normalize_session_id(request.session_id)
-
-    try:
-        reply = await run_in_threadpool(run_conversation, request.message, session_id)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "agent failed", "detail": str(exc)},
-        ) from exc
+    http_request.state.session_id = session_id
+    reply = await run_in_threadpool(run_conversation, request.message, session_id)
 
     return {"session_id": session_id, "reply": reply}
 

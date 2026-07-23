@@ -24,6 +24,11 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
 
+    def test_health_response_has_request_id(self):
+        response = self.client.get("/health")
+
+        self.assertTrue(response.headers["X-Request-ID"])
+
     def test_skills_endpoint_uses_default_session(self):
         response = self.client.get("/skills")
 
@@ -46,6 +51,15 @@ class ServerTest(unittest.TestCase):
         response = self.client.post("/chat", json={"message": "你好"})
 
         self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.json()["error"],
+            {
+                "code": "AUTHENTICATION_FAILED",
+                "message": "认证失败",
+                "request_id": response.headers["X-Request-ID"],
+            },
+        )
+        self.assertEqual(response.headers["WWW-Authenticate"], "Bearer")
 
     def test_chat_rejects_wrong_authorization(self):
         response = self.client.post(
@@ -69,6 +83,39 @@ class ServerTest(unittest.TestCase):
             response.json(),
             {"session_id": "user-1", "reply": "收到，BOSS。"},
         )
+
+    def test_chat_internal_error_is_safe(self):
+        secret = "private-provider-error"
+        with patch("app.server.run_conversation", side_effect=RuntimeError(secret)):
+            response = self.client.post(
+                "/chat",
+                headers=self.headers,
+                json={"session_id": "user-1", "message": "你好"},
+            )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["error"]["code"], "INTERNAL_ERROR")
+        self.assertEqual(response.json()["error"]["message"], "服务暂时不可用")
+        self.assertEqual(
+            response.json()["error"]["request_id"],
+            response.headers["X-Request-ID"],
+        )
+        self.assertNotIn(secret, response.text)
+
+    def test_request_log_excludes_message_and_token(self):
+        private_message = "不得写入日志的聊天内容"
+        with self.assertLogs("agent.server", level="INFO") as captured:
+            with patch("app.server.run_conversation", return_value="收到"):
+                self.client.post(
+                    "/chat",
+                    headers=self.headers,
+                    json={"session_id": "user-1", "message": private_message},
+                )
+
+        output = "\n".join(captured.output)
+        self.assertNotIn(private_message, output)
+        self.assertNotIn("test-token", output)
+        self.assertIn("session_id=user-1", output)
 
     def test_switch_skill_requires_authorization(self):
         response = self.client.post("/switch_skill", json={"skill_name": "chun"})
