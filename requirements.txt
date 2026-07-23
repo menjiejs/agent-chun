@@ -1,3 +1,7 @@
 openai
 python-dotenv
 requests
+fastapi
+uvicorn
+websockets
+httpx
