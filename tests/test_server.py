@@ -122,6 +122,44 @@ class ServerTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
 
+    def test_websocket_validation_error_is_safe(self):
+        with self.client.websocket_connect(
+            "/ws/chat?token=test-token"
+        ) as websocket:
+            websocket.send_json({"message": "   "})
+            response = websocket.receive_json()
+
+        self.assertEqual(
+            response,
+            {
+                "type": "error",
+                "code": "VALIDATION_ERROR",
+                "message": "消息格式不正确",
+            },
+        )
+
+    def test_websocket_internal_error_is_safe(self):
+        with patch(
+            "app.server.stream_conversation",
+            side_effect=RuntimeError("private-provider-error"),
+        ):
+            with self.client.websocket_connect(
+                "/ws/chat?token=test-token"
+            ) as websocket:
+                websocket.send_json({"session_id": "user-1", "message": "你好"})
+                websocket.receive_json()
+                response = websocket.receive_json()
+
+        self.assertEqual(
+            response,
+            {
+                "type": "error",
+                "code": "INTERNAL_ERROR",
+                "message": "服务暂时不可用",
+            },
+        )
+        self.assertNotIn("private-provider-error", str(response))
+
 
 if __name__ == "__main__":
     unittest.main()

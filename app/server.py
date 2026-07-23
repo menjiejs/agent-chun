@@ -208,6 +208,8 @@ async def chat(request: ChatRequest, http_request: Request):
 
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
+    connection_id = uuid.uuid4().hex
+    session_id = "-"
     token = websocket.query_params.get("token")
     if not token:
         authorization = websocket.headers.get("authorization", "")
@@ -217,11 +219,21 @@ async def websocket_chat(websocket: WebSocket):
 
     try:
         verify_token_value(token)
-    except HTTPException as exc:
-        await websocket.close(code=1008, reason=str(exc.detail))
+    except HTTPException:
+        logger.info(
+            "websocket_rejected connection_id=%s path=%s",
+            connection_id,
+            websocket.url.path,
+        )
+        await websocket.close(code=1008, reason="authentication failed")
         return
 
     await websocket.accept()
+    logger.info(
+        "websocket_connected connection_id=%s path=%s",
+        connection_id,
+        websocket.url.path,
+    )
 
     try:
         while True:
@@ -229,7 +241,20 @@ async def websocket_chat(websocket: WebSocket):
             try:
                 request = ChatRequest.model_validate(body)
             except Exception as exc:
-                await websocket.send_json({"type": "error", "error": str(exc)})
+                logger.info(
+                    "websocket_validation_error connection_id=%s path=%s "
+                    "error_type=%s",
+                    connection_id,
+                    websocket.url.path,
+                    type(exc).__name__,
+                )
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "VALIDATION_ERROR",
+                        "message": "消息格式不正确",
+                    }
+                )
                 continue
 
             session_id = normalize_session_id(request.session_id)
@@ -241,8 +266,28 @@ async def websocket_chat(websocket: WebSocket):
                     await websocket.send_json({"type": "delta", "content": chunk})
                 await websocket.send_json({"type": "done", "session_id": session_id})
             except Exception as exc:
-                await websocket.send_json({"type": "error", "error": str(exc)})
+                logger.error(
+                    "websocket_error connection_id=%s path=%s session_id=%s "
+                    "error_type=%s",
+                    connection_id,
+                    websocket.url.path,
+                    session_id,
+                    type(exc).__name__,
+                )
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "INTERNAL_ERROR",
+                        "message": "服务暂时不可用",
+                    }
+                )
     except WebSocketDisconnect:
+        logger.info(
+            "websocket_disconnected connection_id=%s path=%s session_id=%s",
+            connection_id,
+            websocket.url.path,
+            session_id,
+        )
         return
 
 

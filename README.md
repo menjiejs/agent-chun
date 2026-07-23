@@ -165,6 +165,12 @@ data/agent.db
 
 `data/` 已经被 `.gitignore` 忽略，不会提交到仓库。
 
+## 日志与错误
+
+服务日志同时显示在终端并写入 `logs/agent.log`。日志文件达到 5 MB 后自动轮换，保留最近 5 个文件。
+
+日志不会记录聊天原文、请求正文、API Token 或 API Key。HTTP 响应头中的 `X-Request-ID` 可用于在日志中定位对应请求。
+
 ## 命令
 
 ```text
