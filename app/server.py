@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 import time
 import uuid
@@ -18,6 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, field_validator
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
 from app.agent import (
@@ -33,9 +35,22 @@ from app.logging_config import logger
 
 HOST = "127.0.0.1"
 HTTP_PORT = 8000
+SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")
 
 app = FastAPI(title="芷春 Agent", version="1.0.0")
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def validate_session_id_value(value):
+    if value is None:
+        return None
+
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if not SESSION_ID_PATTERN.fullmatch(normalized):
+        raise ValueError("session_id contains invalid characters")
+    return normalized
 
 
 class ChatRequest(BaseModel):
@@ -49,6 +64,11 @@ class ChatRequest(BaseModel):
             raise ValueError("message must be a non-empty string")
         return value
 
+    @field_validator("session_id")
+    @classmethod
+    def session_id_must_be_safe(cls, value):
+        return validate_session_id_value(value)
+
 
 class SwitchSkillRequest(BaseModel):
     skill_name: str
@@ -61,11 +81,17 @@ class SwitchSkillRequest(BaseModel):
             raise ValueError("skill_name must be a non-empty string")
         return value
 
+    @field_validator("session_id")
+    @classmethod
+    def session_id_must_be_safe(cls, value):
+        return validate_session_id_value(value)
+
 
 def normalize_session_id(session_id=None):
-    if isinstance(session_id, str) and session_id.strip():
-        return session_id.strip()
-    return DEFAULT_SESSION_ID
+    try:
+        return validate_session_id_value(session_id) or DEFAULT_SESSION_ID
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid session_id") from None
 
 
 def get_api_token():
@@ -109,12 +135,14 @@ def error_response(request, status_code, code, message, headers=None):
     )
 
 
-@app.exception_handler(HTTPException)
+@app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request, exc):
     if exc.status_code == 401:
         code, message = "AUTHENTICATION_FAILED", "认证失败"
     elif exc.status_code == 404:
         code, message = "NOT_FOUND", str(exc.detail)
+    elif exc.status_code == 422:
+        code, message = "VALIDATION_ERROR", "请求参数不正确"
     elif exc.status_code >= 500:
         code, message = "INTERNAL_ERROR", "服务暂时不可用"
     else:
@@ -237,9 +265,11 @@ async def websocket_chat(websocket: WebSocket):
 
     try:
         while True:
-            body = await websocket.receive_json()
             try:
+                body = await websocket.receive_json()
                 request = ChatRequest.model_validate(body)
+            except WebSocketDisconnect:
+                raise
             except Exception as exc:
                 logger.info(
                     "websocket_validation_error connection_id=%s path=%s "
@@ -298,7 +328,13 @@ def run_server():
     print(f"技能列表: http://{HOST}:{HTTP_PORT}/skills")
     print(f"聊天接口: http://{HOST}:{HTTP_PORT}/chat")
     print(f"WebSocket 流式聊天: ws://{HOST}:{HTTP_PORT}/ws/chat")
-    uvicorn.run(app, host=HOST, port=HTTP_PORT)
+    uvicorn.run(
+        app,
+        host=HOST,
+        port=HTTP_PORT,
+        access_log=False,
+        log_level="warning",
+    )
 
 
 if __name__ == "__main__":

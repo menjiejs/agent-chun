@@ -9,6 +9,9 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 
 def configure_logging():
+    logging.getLogger("uvicorn.access").disabled = True
+    logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+
     logger = logging.getLogger(LOGGER_NAME)
     if logger.handlers:
         return logger

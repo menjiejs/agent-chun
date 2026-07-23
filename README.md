@@ -57,7 +57,7 @@ python server.py
 
 ```bash
 source venv/bin/activate
-uvicorn app.server:app --reload
+uvicorn app.server:app --reload --no-access-log --log-level warning
 ```
 
 接口文档：

@@ -6,8 +6,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 os.environ["API_TOKEN"] = "test-token"
+os.environ.setdefault("ZHIPU_API_KEY", "test-key")
 
-from app.server import app
+from app.server import app, run_server
 
 
 class ServerTest(unittest.TestCase):
@@ -29,6 +30,26 @@ class ServerTest(unittest.TestCase):
 
         self.assertTrue(response.headers["X-Request-ID"])
 
+    def test_unknown_route_uses_error_envelope(self):
+        response = self.client.get("/missing")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error"]["code"], "NOT_FOUND")
+        self.assertEqual(
+            response.json()["error"]["request_id"],
+            response.headers["X-Request-ID"],
+        )
+
+    def test_method_not_allowed_uses_error_envelope(self):
+        response = self.client.post("/health")
+
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.json()["error"]["code"], "HTTP_ERROR")
+        self.assertEqual(
+            response.json()["error"]["request_id"],
+            response.headers["X-Request-ID"],
+        )
+
     def test_skills_endpoint_uses_default_session(self):
         response = self.client.get("/skills")
 
@@ -37,6 +58,18 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(body["session_id"], "default")
         self.assertEqual(body["current_skill"]["name"], "chun")
         self.assertEqual(body["skills"][0]["name"], "chun")
+
+    def test_skills_rejects_unsafe_session_id_without_logging_it(self):
+        unsafe_session_id = "safe\nforged-log-entry"
+        with self.assertLogs("agent.server", level="INFO") as captured:
+            response = self.client.get(
+                "/skills",
+                params={"session_id": unsafe_session_id},
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["error"]["code"], "VALIDATION_ERROR")
+        self.assertNotIn("forged-log-entry", "\n".join(captured.output))
 
     def test_chat_rejects_blank_message(self):
         response = self.client.post(
@@ -138,6 +171,22 @@ class ServerTest(unittest.TestCase):
             },
         )
 
+    def test_websocket_malformed_json_is_safe(self):
+        with self.client.websocket_connect(
+            "/ws/chat?token=test-token"
+        ) as websocket:
+            websocket.send_text("{")
+            response = websocket.receive_json()
+
+        self.assertEqual(
+            response,
+            {
+                "type": "error",
+                "code": "VALIDATION_ERROR",
+                "message": "消息格式不正确",
+            },
+        )
+
     def test_websocket_internal_error_is_safe(self):
         with patch(
             "app.server.stream_conversation",
@@ -159,6 +208,18 @@ class ServerTest(unittest.TestCase):
             },
         )
         self.assertNotIn("private-provider-error", str(response))
+
+    def test_run_server_disables_unsafe_uvicorn_request_logs(self):
+        with patch("app.server.uvicorn.run") as uvicorn_run:
+            run_server()
+
+        uvicorn_run.assert_called_once_with(
+            app,
+            host="127.0.0.1",
+            port=8000,
+            access_log=False,
+            log_level="warning",
+        )
 
 
 if __name__ == "__main__":
