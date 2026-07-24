@@ -41,3 +41,7 @@ napcat-inject/
 dist/
 build/
 *.egg-info/
+
+# 本地隔离工作区和语音模型
+.worktrees/
+local_tts/
