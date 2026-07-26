@@ -95,11 +95,15 @@ bool configureI2S(uint32_t sampleRate) {
   return true;
 }
 
-void drainI2S(uint32_t sampleRate) {
+bool drainI2S(uint32_t sampleRate) {
   uint8_t silence[64] = {};
   size_t written = 0;
-  i2s_write(
-      I2S_PORT, silence, sizeof(silence), &written, portMAX_DELAY);
+  if (i2s_write(
+          I2S_PORT, silence, sizeof(silence), &written, portMAX_DELAY) !=
+          ESP_OK ||
+      written != sizeof(silence)) {
+    return false;
+  }
   uint32_t drainDelayMs =
       (static_cast<uint32_t>(I2S_DMA_BUFFER_COUNT) *
            I2S_DMA_BUFFER_LENGTH * 1000U +
@@ -107,6 +111,7 @@ void drainI2S(uint32_t sampleRate) {
       sampleRate;
   delay(drainDelayMs);
   i2s_zero_dma_buffer(I2S_PORT);
+  return true;
 }
 
 bool findPcmData(Stream& stream, uint32_t& sampleRate, uint32_t& dataLength) {
@@ -117,14 +122,24 @@ bool findPcmData(Stream& stream, uint32_t& sampleRate, uint32_t& dataLength) {
   if (memcmp(riff, "RIFF", 4) != 0 || memcmp(riff + 8, "WAVE", 4) != 0) {
     return false;
   }
+  uint32_t riffSize = readLe32(riff + 4);
+  if (riffSize < 4) {
+    return false;
+  }
+  uint32_t riffRemaining = riffSize - 4;
 
   bool validFormat = false;
-  while (true) {
+  while (riffRemaining >= 8) {
     uint8_t header[8];
     if (!readExact(stream, header, sizeof(header))) {
       return false;
     }
+    riffRemaining -= sizeof(header);
     uint32_t chunkSize = readLe32(header + 4);
+    uint32_t padding = chunkSize & 1U;
+    if (chunkSize > riffRemaining || padding > riffRemaining - chunkSize) {
+      return false;
+    }
 
     if (memcmp(header, "fmt ", 4) == 0) {
       if (chunkSize < 16) {
@@ -137,18 +152,23 @@ bool findPcmData(Stream& stream, uint32_t& sampleRate, uint32_t& dataLength) {
       uint16_t audioFormat = readLe16(format);
       uint16_t channels = readLe16(format + 2);
       sampleRate = readLe32(format + 4);
+      uint32_t byteRate = readLe32(format + 8);
+      uint16_t blockAlign = readLe16(format + 12);
       uint16_t bitsPerSample = readLe16(format + 14);
       if (!skipBytes(stream, chunkSize - 16) ||
-          ((chunkSize & 1U) && !skipBytes(stream, 1))) {
+          (padding && !skipBytes(stream, padding))) {
         return false;
       }
+      riffRemaining -= chunkSize;
+      riffRemaining -= padding;
       validFormat =
-          audioFormat == 1 && channels == 1 && bitsPerSample == 16;
+          audioFormat == 1 && channels == 1 && sampleRate == 24000 &&
+          byteRate == 48000 && blockAlign == 2 && bitsPerSample == 16;
       continue;
     }
 
     if (memcmp(header, "data", 4) == 0) {
-      if (!validFormat || sampleRate != 24000) {
+      if (!validFormat || chunkSize == 0 || (chunkSize & 1U) != 0) {
         return false;
       }
       dataLength = chunkSize;
@@ -156,10 +176,13 @@ bool findPcmData(Stream& stream, uint32_t& sampleRate, uint32_t& dataLength) {
     }
 
     if (!skipBytes(stream, chunkSize) ||
-        ((chunkSize & 1U) && !skipBytes(stream, 1))) {
+        (padding && !skipBytes(stream, padding))) {
       return false;
     }
+    riffRemaining -= chunkSize;
+    riffRemaining -= padding;
   }
+  return false;
 }
 
 bool playTts(const char* text) {
@@ -187,7 +210,13 @@ bool playTts(const char* text) {
     return false;
   }
   String contentType = http.header("Content-Type");
-  if (!contentType.startsWith("audio/wav")) {
+  int parameterStart = contentType.indexOf(';');
+  if (parameterStart >= 0) {
+    contentType.remove(parameterStart);
+  }
+  contentType.trim();
+  contentType.toLowerCase();
+  if (contentType != "audio/wav") {
     Serial.printf("响应不是 WAV：%s\n", contentType.c_str());
     http.end();
     return false;
@@ -235,9 +264,13 @@ bool playTts(const char* text) {
     remaining -= static_cast<uint32_t>(received);
   }
 
-  drainI2S(sampleRate);
+  bool drained = drainI2S(sampleRate);
   releaseI2S();
   http.end();
+  if (!drained) {
+    Serial.println("I2S 尾音排空失败");
+    return false;
+  }
   Serial.println("播放完成");
   return true;
 }
