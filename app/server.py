@@ -20,7 +20,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, field_validator
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from app.agent import (
     DEFAULT_SESSION_ID,
@@ -31,9 +31,14 @@ from app.agent import (
     switch_skill,
 )
 from app.logging_config import logger
+from app.tts_client import (
+    TTSConfigurationError,
+    TTSUnavailableError,
+    TTSUpstreamError,
+    synthesize_speech,
+)
 
 
-HOST = "127.0.0.1"
 HTTP_PORT = 8000
 SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")
 
@@ -87,6 +92,20 @@ class SwitchSkillRequest(BaseModel):
         return validate_session_id_value(value)
 
 
+class TTSRequest(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def text_must_be_valid(cls, value):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("text must be a non-empty string")
+        if len(normalized) > 1024:
+            raise ValueError("text must not exceed 1024 characters")
+        return normalized
+
+
 def normalize_session_id(session_id=None):
     try:
         return validate_session_id_value(session_id) or DEFAULT_SESSION_ID
@@ -96,6 +115,10 @@ def normalize_session_id(session_id=None):
 
 def get_api_token():
     return os.getenv("API_TOKEN", "").strip()
+
+
+def get_host():
+    return os.getenv("HOST", "").strip() or "127.0.0.1"
 
 
 def verify_token_value(token):
@@ -234,6 +257,27 @@ async def chat(request: ChatRequest, http_request: Request):
     return {"session_id": session_id, "reply": reply}
 
 
+@app.post("/tts", dependencies=[Depends(require_api_token)])
+async def tts(request: TTSRequest, http_request: Request):
+    request_id = get_request_id(http_request)
+    try:
+        audio = await run_in_threadpool(
+            synthesize_speech,
+            request.text,
+            request_id,
+        )
+    except (TTSConfigurationError, TTSUnavailableError):
+        raise HTTPException(status_code=503, detail="TTS unavailable") from None
+    except TTSUpstreamError:
+        raise HTTPException(status_code=502, detail="TTS upstream error") from None
+
+    return Response(
+        content=audio,
+        media_type="audio/wav",
+        headers={"Content-Disposition": 'inline; filename="speech.wav"'},
+    )
+
+
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
     connection_id = uuid.uuid4().hex
@@ -322,15 +366,17 @@ async def websocket_chat(websocket: WebSocket):
 
 
 def run_server():
-    print(f"HTTP 服务已启动: http://{HOST}:{HTTP_PORT}")
-    print(f"接口文档: http://{HOST}:{HTTP_PORT}/docs")
-    print(f"健康检查: http://{HOST}:{HTTP_PORT}/health")
-    print(f"技能列表: http://{HOST}:{HTTP_PORT}/skills")
-    print(f"聊天接口: http://{HOST}:{HTTP_PORT}/chat")
-    print(f"WebSocket 流式聊天: ws://{HOST}:{HTTP_PORT}/ws/chat")
+    host = get_host()
+    print(f"HTTP 服务已启动: http://{host}:{HTTP_PORT}")
+    print(f"接口文档: http://{host}:{HTTP_PORT}/docs")
+    print(f"健康检查: http://{host}:{HTTP_PORT}/health")
+    print(f"技能列表: http://{host}:{HTTP_PORT}/skills")
+    print(f"聊天接口: http://{host}:{HTTP_PORT}/chat")
+    print(f"TTS 接口: http://{host}:{HTTP_PORT}/tts")
+    print(f"WebSocket 流式聊天: ws://{host}:{HTTP_PORT}/ws/chat")
     uvicorn.run(
         app,
-        host=HOST,
+        host=host,
         port=HTTP_PORT,
         access_log=False,
         log_level="warning",
