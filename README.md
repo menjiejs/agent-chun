@@ -35,7 +35,10 @@ cp .env.example .env
 ZHIPU_API_KEY=你的智谱 API Key
 AMAP_WEATHER_KEY=你的高德天气 API Key
 API_TOKEN=你的服务访问密码
+HOST=0.0.0.0
 ```
+
+`HOST=0.0.0.0` 允许同一局域网内的 ESP32 访问服务。不要通过路由器端口转发将 8000 端口暴露到公网。
 
 ## 启动
 
@@ -101,6 +104,19 @@ curl -X POST http://127.0.0.1:8000/chat \
 {"session_id": "user-1", "reply": "这里是 agent 的回复内容"}
 ```
 
+调用语音合成接口：
+
+```http
+POST /tts
+Authorization: Bearer 本机配置的服务访问密码
+Content-Type: application/json
+
+{"text":"你好，我是芷春"}
+```
+
+请求成功时返回 `audio/wav`。完整的 ESP32 配置、MAX98357 接线、烧录和验收步骤见
+[ESP32 智谱 TTS 运行手册](docs/runbooks/zhipu-tts-esp32.md)。
+
 查看技能：
 
 ```bash
@@ -142,6 +158,7 @@ ws://127.0.0.1:8000/ws/chat?token=你的服务访问密码
 - `GET /skills?session_id=user-1`：查看技能和当前会话技能
 - `POST /switch_skill`：切换指定会话的技能，并清空该会话历史
 - `POST /chat`：普通非流式聊天
+- `POST /tts`：将文本合成为 WAV 音频
 
 ## 多会话和历史
 
