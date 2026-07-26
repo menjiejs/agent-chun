@@ -6,6 +6,7 @@
 
 #include "device_config.h"
 #include "secrets.h"
+#include "wav_bounds.h"
 
 static const i2s_port_t I2S_PORT = I2S_NUM_0;
 static bool i2sInstalled = false;
@@ -114,7 +115,11 @@ bool drainI2S(uint32_t sampleRate) {
   return true;
 }
 
-bool findPcmData(Stream& stream, uint32_t& sampleRate, uint32_t& dataLength) {
+bool findPcmData(
+    Stream& stream,
+    int32_t responseLength,
+    uint32_t& sampleRate,
+    uint32_t& dataLength) {
   uint8_t riff[12];
   if (!readExact(stream, riff, sizeof(riff))) {
     return false;
@@ -123,10 +128,10 @@ bool findPcmData(Stream& stream, uint32_t& sampleRate, uint32_t& dataLength) {
     return false;
   }
   uint32_t riffSize = readLe32(riff + 4);
-  if (riffSize < 4) {
+  uint32_t riffRemaining = 0;
+  if (!resolveRiffRemaining(riffSize, responseLength, riffRemaining)) {
     return false;
   }
-  uint32_t riffRemaining = riffSize - 4;
 
   bool validFormat = false;
   while (riffRemaining >= 8) {
@@ -226,7 +231,7 @@ bool playTts(const char* text) {
   stream->setTimeout(HTTP_TIMEOUT_MS);
   uint32_t sampleRate = 0;
   uint32_t dataLength = 0;
-  if (!findPcmData(*stream, sampleRate, dataLength)) {
+  if (!findPcmData(*stream, http.getSize(), sampleRate, dataLength)) {
     Serial.println("WAV 格式不受支持");
     http.end();
     return false;
