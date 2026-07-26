@@ -45,3 +45,7 @@ build/
 # 本地隔离工作区和语音模型
 .worktrees/
 local_tts/
+
+# ESP32 PlatformIO build artifacts and local device credentials
+firmware/esp32-tts/.pio/
+firmware/esp32-tts/include/secrets.h
