@@ -1,8 +1,10 @@
 import logging
+import tempfile
 import unittest
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
-from app.logging_config import LOG_FILE, logger
+from app.logging_config import LOG_FILE, configure_logging, logger
 
 
 class LoggingConfigTest(unittest.TestCase):
@@ -30,6 +32,23 @@ class LoggingConfigTest(unittest.TestCase):
         self.assertGreaterEqual(
             logging.getLogger("uvicorn.error").level,
             logging.WARNING,
+        )
+
+    def test_unwritable_log_path_falls_back_to_console(self):
+        with tempfile.TemporaryDirectory() as directory:
+            blocked_parent = Path(directory) / "not-a-directory"
+            blocked_parent.write_text("blocked", encoding="utf-8")
+
+            fallback = configure_logging(
+                logger_name="agent.test.fallback",
+                log_file=blocked_parent / "agent.log",
+            )
+
+        self.assertTrue(
+            any(type(handler) is logging.StreamHandler for handler in fallback.handlers)
+        )
+        self.assertFalse(
+            any(isinstance(handler, RotatingFileHandler) for handler in fallback.handlers)
         )
 
 

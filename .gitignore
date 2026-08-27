@@ -25,6 +25,7 @@ __pycache__/
 # 日志和临时文件
 logs/
 data/
+outputs/
 *.log
 *.tmp
 .DS_Store
@@ -40,11 +41,15 @@ napcat-inject/
 # 部署相关
 dist/
 build/
+.pyinstaller-cache/
 *.egg-info/
 
 # 本地隔离工作区和语音模型
 .worktrees/
+.superpowers/
 local_tts/
+models/kws/
+models/asr/
 
 # ESP32 PlatformIO build artifacts and local device credentials
 firmware/esp32-tts/.pio/

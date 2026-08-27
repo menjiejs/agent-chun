@@ -5,3 +5,8 @@ fastapi
 uvicorn
 websockets
 httpx
+numpy
+pyinstaller
+PySide6
+sherpa-onnx
+sounddevice

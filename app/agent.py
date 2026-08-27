@@ -2,7 +2,6 @@ import json
 import os
 import threading
 
-from dotenv import load_dotenv
 from openai import OpenAI
 
 from app.history_store import (
@@ -15,9 +14,10 @@ from app.history_store import (
 )
 from skills import get_skill_info, get_system_prompt, list_all_skills, skill_manager
 from tools import available_functions, tools
+from app.config import load_configuration
 
 
-load_dotenv()
+load_configuration()
 init_db()
 
 api_key = os.getenv("ZHIPU_API_KEY")

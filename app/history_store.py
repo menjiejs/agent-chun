@@ -3,8 +3,10 @@ import os
 import sqlite3
 from datetime import datetime
 
+from app.config import data_dir
 
-DB_PATH = os.path.join("data", "agent.db")
+
+DB_PATH = str(data_dir() / "agent.db")
 
 
 def get_connection():
